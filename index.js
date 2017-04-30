@@ -1,7 +1,10 @@
+const exe = require('child_process');
+const path = require('path');
 const { shell, clipboard } = require('electron');
 const escapeHTML = require('escape-html');
 const emailRegex = require('email-regex');
 const urlRegex = require('./url-regex');
+const fileRegex = require('./file-regex');
 
 const emailRe = emailRegex({ exact: true });
 
@@ -9,6 +12,9 @@ const DEFAULT_CONFIG = {
   defaultBrowser: true,
   clickAction: 'open'
 };
+
+
+console.log('hyperlinks');
 
 exports.getTermProps = function (uid, parentProps, props) {
   return Object.assign(props, { uid });
@@ -94,9 +100,29 @@ exports.decorateTerm = function (Term, { React }) {
 
       while (match = re.exec(textContent)) {
         const text = match[0];
+        console.log("found url " + text);
         const url = this.getAbsoluteUrl(text);
         const start = re.lastIndex - text.length;
         const end = re.lastIndex;
+        const id = this.id++;
+        urls.push({ id, url, start, end });
+      }
+
+      // TODO inject the current directory content for potential file
+      // match. Otherwise, only match what contains path sep
+      const fre = fileRegex();
+
+      while (match = fre.exec(textContent)) {
+        const text = match[1];
+        console.log(match);
+        var uri = text;
+        if (uri.startsWith('.')) {
+          uri = path.resolve(path.join(curCwd, uri));
+        }
+        uri = path.normalize(uri);
+        const url = "file://" + uri;
+        const start = fre.lastIndex - text.length;
+        const end = fre.lastIndex;
         const id = this.id++;
         urls.push({ id, url, start, end });
       }
@@ -260,3 +286,42 @@ const styles = `
     text-decoration: underline;
   }
 `;
+
+
+// Sessions
+
+let curPid;
+let curCwd;
+
+// Current shell cwd
+const setCwd = (pid) => {
+    exec(`lsof -p ${pid} | grep cwd | tr -s ' ' | cut -d ' ' -f9-`, (err, cwd) => {
+        curCwd = cwd.trim();
+    })
+};
+
+
+exports.middleware = (store) => (next) => (action) => {
+    const uids = store.getState().sessions.sessions;
+
+    switch (action.type) {
+        case 'SESSION_SET_XTERM_TITLE':
+            curPid = uids[action.uid].pid;
+            break;
+        case 'SESSION_ADD':
+            curPid = action.pid;
+            setCwd(curPid);
+            break;
+        case 'SESSION_ADD_DATA':
+            const { data } = action;
+            const enterKey = data.indexOf('\n') > 0;
+
+            if (enterKey) setCwd(curPid);
+            break;
+        case 'SESSION_SET_ACTIVE':
+            curPid = uids[action.uid].pid;
+            setCwd(curPid);
+            break;
+    }
+    next(action);
+};
